@@ -5,10 +5,12 @@ use rand::distributions::weighted::alias_method::WeightedIndex;
 use rand::prelude::*;
 use regex::Regex;
 use std::collections::{BinaryHeap, HashMap};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process;
+// use std::fs::{Component, , DirEntry};
 
 #[derive(Debug, Clone, Default)]
 pub struct UserOptions {
@@ -182,6 +184,9 @@ pub fn walk_dir_recursive(path: &Path, all_files: &mut Vec<PathBuf>) {
         .collect::<Result<Vec<_>, io::Error>>()
         .unwrap();
     for dir_path in &dir_entries {
+        if has_fuzz_target(dir_path){
+            continue;
+        }
         if dir_path.is_file() && is_rs_src_file(dir_path) {
             all_files.push(dir_path.clone());
         }
@@ -189,6 +194,16 @@ pub fn walk_dir_recursive(path: &Path, all_files: &mut Vec<PathBuf>) {
             walk_dir_recursive(dir_path, all_files);
         }
     }
+}
+
+pub fn has_fuzz_target(dir_path: &PathBuf) -> bool {
+    let mut dir_iter = dir_path.components();
+    while let Some(component) = dir_iter.next() {
+        if component == Component::Normal(OsStr::new("fuzz_target")) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn is_rs_src_file(path: &Path) -> bool {
@@ -268,6 +283,11 @@ pub fn generate_afl_initial_input(
     char_literals: &HashMap<String, usize>,
 ) -> Vec<String> {
     let mut literal_counts = BinaryHeap::new();
+    println!("find different literal: ");
+    println!("string: {}", string_literals.len());
+    println!("integer: {}", integer_literals.len());
+    println!("float: {}", float_literals.len());
+    println!("char: {}", char_literals.len());
 
     add_literal_counts(&mut literal_counts, integer_literals);
     add_literal_counts(&mut literal_counts, float_literals);
@@ -282,6 +302,9 @@ pub fn generate_afl_initial_input(
         .iter()
         .map(|literal_count| literal_count.count)
         .collect::<Vec<usize>>();
+
+    // println!("literal_vec={:?}",literal_vec);
+    // println!("literal_weights={:?}",literal_weights);
     let dist = WeightedIndex::new(literal_weights).unwrap();
 
     let number = user_options.afl_initail_number.unwrap();
@@ -302,6 +325,7 @@ pub fn generate_afl_initial_input(
     let length_dist = WeightedIndex::new(length_weight).unwrap();
     for _ in 0..number {
         let mut one_string = String::new();
+        
         let pick_number = if let Some(length) = length {
             length
         } else {

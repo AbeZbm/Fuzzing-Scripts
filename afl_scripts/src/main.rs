@@ -5,6 +5,7 @@ extern crate lazy_static;
 extern crate config;
 extern crate regex;
 
+use log::LevelFilter;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::fs::File;
 
 const CRASH_DIR: &str = "default/crashes";
 const TEST_FILE_DIR: &str = "test_files";
@@ -33,18 +35,21 @@ const STATISTIC_OUTPUT_FILE: &str = "statistics";
 const EXIT_TIME_DIR: &str = "exit_time";
 const SHOWMAP_DIR: &str = "showmap";
 
+
+
 pub struct Config {
     pub crate_name: String,
-    pub crate_dir: PathBuf,
-    pub test_dir: PathBuf,
-    pub build_dir: PathBuf,
-    pub afl_input_dir: PathBuf,
-    pub afl_output_dir: PathBuf,
-    pub target_dir: PathBuf,
+    pub crate_dir: PathBuf,      // . 
+    pub test_dir: PathBuf,       // <crate>/fuzz_target
+    pub build_dir: PathBuf,      // <crate>/fuzz_target/build
+    pub afl_input_dir: PathBuf,  // <crate>/fuzz_target/afl_init
+    pub afl_output_dir: PathBuf, // <crate>/fuzz_target/out
+    pub target_dir: PathBuf,     // <crate>/fuzz_target/build/target/debug
+    pub disable_asan: bool
 }
 
 impl Config {
-    fn new(crate_name: &str, crate_dir: &Path) -> Config {
+    fn new(crate_name: &str, crate_dir: &Path, options: &UserOptions) -> Config {
         let crate_name = crate_name.to_owned();
         let crate_dir = crate_dir.to_owned();
         let test_dir = crate_dir.join("fuzz_target");
@@ -52,7 +57,7 @@ impl Config {
         let afl_input_dir = test_dir.join(AFL_INPUT_DIR);
         let afl_output_dir = test_dir.join(AFL_OUTPUT_DIR);
         let target_dir = build_dir.join("target").join("debug");
-
+        let disable_asan=options.disable_asan;
         Config {
             crate_name,
             crate_dir,
@@ -61,6 +66,7 @@ impl Config {
             afl_input_dir,
             afl_output_dir,
             target_dir,
+            disable_asan
         }
     }
 }
@@ -81,6 +87,7 @@ struct UserOptions {
     statistic: bool,
     showmap: bool,
     init_afl_input: bool,
+    disable_asan: bool,
     all: bool,
 }
 
@@ -102,6 +109,7 @@ impl UserOptions {
             showmap: false,
             replay: false,
             init_afl_input: false,
+            disable_asan: false
         }
     }
 
@@ -112,8 +120,7 @@ impl UserOptions {
     }
 
     fn extract_options(&mut self, args: Vec<String>) {
-        let mut args_iter = args.iter();
-        let _ = args_iter.next(); //把程序名字跳过
+        let mut args_iter = args.iter().skip(1);
 
         //let list_option = Regex::new("(-l$|--list)").unwrap();
         let find_literal_option = Regex::new("(-f$|--find-literal)").unwrap();
@@ -131,6 +138,7 @@ impl UserOptions {
         let showmap_option = Regex::new("-showmap").unwrap();
         let replay_option = Regex::new("(-r$|--replay)").unwrap();
         let init_afl_input_option = Regex::new("(-i$|--init)").unwrap();
+        let disable_asan = Regex::new("(--disable-asan)").unwrap();
 
         while let Some(s) = args_iter.next() {
             if help_option.is_match(s.as_str()) {
@@ -200,6 +208,10 @@ impl UserOptions {
                 self.init_afl_input = true;
                 continue;
             }
+            if disable_asan.is_match(s.as_str()){
+                self.disable_asan=true;
+                continue;
+            }
             if self.crate_name.is_none() {
                 self.crate_name = Some(s.clone());
                 continue;
@@ -244,7 +256,7 @@ fn do_work(user_options: &UserOptions) {
     let crate_string = user_options.crate_name.clone().unwrap_or_default();
     let crate_name = crate_string.as_str();
     let current_dir = std::env::current_dir().unwrap();
-    let config = Config::new(crate_name, &current_dir);
+    let config = Config::new(crate_name, &current_dir, user_options);
 
     if user_options.check {
         info!("check {} success.", crate_name);
@@ -575,8 +587,14 @@ fn init_test_dir(config: &Config, tests: &[String]) {
                 exit(-1);
             });
         file.write_all("\n".as_bytes()).unwrap();
-        let crate_dependency = format!("{} = {{path='../../../'}}\n", crate_name);
-        file.write_all(crate_dependency.as_bytes())
+        let mut dependencies = format!("{} = {{path='../../../'}}\n", crate_name);
+        // Edit here to add dependency
+        let extern_dependencies = ["serde"];
+        // let extern_dependencies = Vec::<String>::new();
+        for dep in extern_dependencies{
+            dependencies.push_str(&format!("{} = \"*\"\n", dep));
+        }
+        file.write_all(dependencies.as_bytes())
             .unwrap_or_else(|_| {
                 error!("write file {:?} failed.", cargo_toml_path);
                 exit(-1);
@@ -631,24 +649,38 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
 }
 
 fn build_afl_tests(config: &Config) {
-    Command::new("cargo")
-        .arg("afl")
+    println!("Build Log in: {:?}",config.test_dir.join("build.log"));
+    let output_file = File::create(config.test_dir.join("build.log")).unwrap();
+    let mut command=Command::new("cargo");
+    command.arg("afl")
         .arg("build")
-        .arg("--offline")
+        .arg("--ignore-rust-version")
+        // .arg("--offline")
+        .arg("--keep-going")
+        .arg("-Zunstable-options")
         .current_dir(&config.build_dir)
-        .output()
-        .unwrap();
+        .stdout(Stdio::from(output_file.try_clone().unwrap()))
+        .stderr(Stdio::from(output_file));
+    if !config.disable_asan{
+        command.env("RUSTFLAGS","-Zsanitizer=address");
+    }
+    command.output().unwrap();
 }
 
 fn check_build(config: &Config, tests: &[String]) {
     let target_path = &config.target_dir;
 
     let mut flag = true;
+    let mut success_count=0;
+    let mut fail_count=0;
     for test in tests {
         let build_afl_file_path = target_path.join(test);
         if !build_afl_file_path.is_file() {
             flag = false;
+            fail_count+=1;
             error!("{} build failed.", test);
+        } else {
+            success_count+=1;
         }
         let replay = test.clone().replace("test", "replay");
         let build_replay_file_path = target_path.join(&replay);
@@ -659,54 +691,55 @@ fn check_build(config: &Config, tests: &[String]) {
     }
     if flag {
         info!("check build success");
-    } else {
-        exit(-1);
     }
+    info!("build success={}, build fail={}",success_count,fail_count);
 }
 
 fn fuzz_it(config: &Config, tests: &[String]) {
-    let test_path = PathBuf::from(&config.build_dir);
-    let target_path = &config.target_dir;
-    let output_path = &config.afl_output_dir;
-    let exit_time_path = test_path.join(EXIT_TIME_DIR);
+    let target_dir = &config.target_dir;
+    let output_dir = &config.afl_output_dir;
+    let exit_time_path = output_dir.join(EXIT_TIME_DIR);
     ensure_empty_dir(&exit_time_path);
 
     let mut threads = Vec::new();
     let val = Arc::new(AtomicUsize::new(0));
 
     for test in tests {
-        let afl_target_path = target_path.clone().join(test);
-        let afl_output_dir = output_path.clone().join(test);
+        let afl_target_path = target_dir.clone().join(test);
+        let afl_output_dir = output_dir.clone().join(test);
         if afl_output_dir.is_file() {
             fs::remove_file(&afl_output_dir).unwrap();
         }
 
-        let test_path_copy = test_path.clone();
-        let afl_input_path = config.afl_input_dir.clone();
+        let afl_input_path = config.afl_input_dir.join(test.to_string()+"_cmin");
         let exit_time_file_path = exit_time_path.join(test);
 
         let val_copy = val.clone();
+
         let handle = thread::spawn(move || {
             info!("fuzz {:?}", afl_target_path);
             let start = Instant::now();
             let args = vec![
                 "afl",
                 "fuzz",
+                //"-D", // deterministic fuzzing
                 "-i",
                 afl_input_path.to_str().unwrap(),
                 "-o",
                 afl_output_dir.to_str().unwrap(),
+                "--",
                 afl_target_path.to_str().unwrap(),
             ];
             info!("args = {:?}", args);
-            let exit_status = Command::new("cargo")
+            let output = Command::new("cargo")
                 .args(&args)
-                .current_dir(test_path_copy.as_os_str())
+                // .current_dir(test_path_copy.as_os_str())
                 .env("AFL_EXIT_WHEN_DONE", "1")
                 .env("AFL_NO_AFFINITY", "1")
-                .stdout(Stdio::null())
-                .status()
+                // .stdout(Stdio::null())
+                .output()
                 .unwrap();
+            let exit_status=output.status;
             info!("{:?} {:?}", afl_target_path, exit_status);
             let cost_time = start.elapsed().as_secs();
 
@@ -729,7 +762,10 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                         exit(-1);
                     });
             } else {
-                error!("{:?} fails.", afl_target_path)
+                error!("stdout = {:?}",String::from_utf8(output.stdout));
+                error!("stderr = {:?}",String::from_utf8(output.stderr));
+                error!("{:?} fails.", afl_target_path);
+
             }
         });
 
@@ -737,7 +773,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     }
 
     let mut minute_count = 0;
-    let statistic_file_path = test_path.join(STATISTIC_OUTPUT_FILE);
+    let statistic_file_path = PathBuf::from(&config.test_dir).join(STATISTIC_OUTPUT_FILE);
+
     if statistic_file_path.is_file() {
         fs::remove_file(&statistic_file_path).unwrap();
     }
@@ -745,6 +782,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         fs::remove_dir_all(&statistic_file_path).unwrap();
     }
     let mut statisticfile = fs::File::create(&statistic_file_path).unwrap();
+
+
     let title = "time\tcrashes\ttargets\tdetails\n";
     statisticfile
         .write_all(title.as_bytes())
@@ -830,8 +869,8 @@ fn ensure_dir(dir: &Path) {
 
 fn tmin(config: &Config) {
     let all_crash_files = find_crash(config);
-    let test_path = PathBuf::from(&config.build_dir);
-    let tmin_output_path = test_path.join(TMIN_OUTPUT_DIR);
+    let test_path = PathBuf::from(&config.test_dir);
+    let tmin_output_path = config.build_dir.join(TMIN_OUTPUT_DIR);
     ensure_empty_dir(&tmin_output_path);
     if all_crash_files.is_empty() {
         warn!("No crash files.");
@@ -840,6 +879,7 @@ fn tmin(config: &Config) {
     debug!("total crashes = {}", all_crash_files.len());
 
     let mut crash_counts = HashMap::new();
+    let mut handles = Vec::new();
     for crash in &all_crash_files {
         let crash_file_name = crash.to_str().unwrap();
         debug!("crash_file_name = {}", crash_file_name);
@@ -860,34 +900,39 @@ fn tmin(config: &Config) {
             crash_counts.insert(test_crate_name, 1);
             1
         };
-        let target_path = &config.target_dir.join(test_crate_name);
-        let target_file_name = target_path.to_str().unwrap();
-        let tmin_output_file = test_tmin_output_path.join(crash_count.to_string());
-        let tmin_output_filename = tmin_output_file.to_str().unwrap();
-        let tmin_input_filename = crash.to_str().unwrap();
-        let args = vec![
-            "afl",
-            "tmin",
-            "-i",
-            tmin_input_filename,
-            "-o",
-            tmin_output_filename,
-            target_file_name,
-        ];
-        Command::new("cargo")
-            .args(args)
-            .stdout(Stdio::null())
-            .status()
-            .unwrap();
+        let target_path = config.target_dir.join(test_crate_name);
+        let tmin_input_filename = crash.to_str().unwrap().to_owned();
+        let handle = thread::spawn(move || {
+            let target_file_name = target_path.to_str().unwrap();
+            let tmin_output_file = test_tmin_output_path.join(crash_count.to_string());
+            let tmin_output_filename = tmin_output_file.to_str().unwrap();
+            let args = vec![
+                "afl",
+                "tmin",
+                "-i",
+                &tmin_input_filename,
+                "-o",
+                tmin_output_filename,
+                target_file_name,
+            ];
+            debug!("Running: {:?}", args);
+            Command::new("cargo")
+                .args(args)
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+        });
+        handles.push(handle);
     }
 }
 
 fn cmin(config: &Config) {
-    let test_dir = &config.build_dir;
+    let test_dir = &config.test_dir;
     let cmin_output_path = test_dir.join(CMIN_OUTPUT_DIR);
     //如果有tmin的output，首先去找tmin的output
     let tmin_output_dir = test_dir.join(TMIN_OUTPUT_DIR);
     if tmin_output_dir.is_dir() {
+        info!("Find tmin directory");
         let tmin_directories = check_maybe_empty_directory(&tmin_output_dir);
         if !tmin_directories.is_empty() {
             ensure_empty_dir(&cmin_output_path);
@@ -906,14 +951,18 @@ fn cmin(config: &Config) {
         }
     }
 
+    info!("Cannot find tmin directory, cmin from crash");
     //如果没能找到tmin的结果，直接去找crash dir
     let afl_output_path = test_dir.join(AFL_OUTPUT_DIR);
+    info!("afl output path = {:?}", afl_output_path);
     let test_output_paths = check_maybe_empty_directory(&afl_output_path);
+    info!("test output path = {:?}", test_output_paths);
 
     let mut nonempty_crash_dir = Vec::new();
 
     for test_output_path in &test_output_paths {
         let crash_output_path = test_output_path.clone().join(CRASH_DIR);
+        info!("Crash output path = {:?}", crash_output_path);
         let crash_files = check_maybe_empty_directory(&crash_output_path);
         if !crash_files.is_empty() {
             //如果这个crash目录非空，那么就需要对这个目录运行cmin
@@ -929,15 +978,20 @@ fn cmin(config: &Config) {
     ensure_empty_dir(&cmin_output_path);
 
     for crash_dir in nonempty_crash_dir {
+        info!("crash: {:?}", crash_dir);
         let crash_dir_name = crash_dir.to_str().unwrap();
         clean_crash_dir(&crash_dir);
         let crash_dir_name_split: Vec<&str> = crash_dir_name.split('/').collect();
         let crash_dir_name_split_len = crash_dir_name_split.len();
-        if crash_dir_name_split_len < 2 {
+        if crash_dir_name_split_len < 3 {
             error!("Invalid crash dir name");
             exit(-1);
         }
-        let test_case_name = crash_dir_name_split[crash_dir_name_split_len - 2];
+        let test_case_name = crash_dir_name_split[crash_dir_name_split_len - 3];
+        info!(
+            "{} {} {:?} {:?}",
+            crash_dir_name, test_case_name, cmin_output_path, config.target_dir
+        );
         execute_cmin(
             crash_dir_name,
             test_case_name,
@@ -990,8 +1044,10 @@ fn clean_crash_dir(crash_dir: &Path) {
 fn replay_crashes(config: &Config) {
     let target_path = &config.target_dir;
     //如果有cmin的结果的话,那么直接去找cmin的结果
-    let cmin_path = &config.build_dir.join(CMIN_OUTPUT_DIR);
+    let cmin_path = &config.test_dir.join(CMIN_OUTPUT_DIR);
+    info!("cmin_path = {:?}", cmin_path);
     if cmin_path.is_dir() {
+        println!("Replay from cmin path");
         let cmin_directories = check_maybe_empty_directory(&cmin_path);
         if !cmin_directories.is_empty() {
             for cmin_directory in cmin_directories {
@@ -1006,10 +1062,19 @@ fn replay_crashes(config: &Config) {
                 let replay_name = test_name.replace("test", "replay");
                 let replay_path = target_path.join(replay_name);
                 let replay_file_name = replay_path.to_str().unwrap();
+                if !replay_path
+                    .try_exists()
+                    .expect("Can not check the existence")
+                {
+                    error!("{} does not exist!", replay_file_name);
+                    continue;
+                }
+                info!("replay for {}", replay_file_name);
                 for crash_file in crash_files {
                     let crash_file_name = crash_file.to_str().unwrap();
                     let output = Command::new(replay_file_name)
                         .arg(crash_file_name)
+                        .env("RUST_BACKTRACE","1")
                         .output()
                         .unwrap();
                     let mut command = replay_file_name.to_string();
@@ -1046,6 +1111,7 @@ fn replay_crashes(config: &Config) {
         }
         let output = Command::new(replay_file_name)
             .arg(crash_file_name)
+            .env("RUST_BACKTRACE","1")
             .output()
             .unwrap();
         let mut command = replay_file_name.to_string();
@@ -1070,7 +1136,7 @@ pub fn output_statistics(config: &Config) {
     let crash_number = all_crash_files.len();
     println!("crashes: {}", crash_number);
     //crashes after cmin
-    let cmin_path = test_path.join(CMIN_OUTPUT_DIR);
+    let cmin_path = config.test_dir.join(CMIN_OUTPUT_DIR);
     if cmin_path.is_dir() {
         let cmin_directories = check_maybe_empty_directory(&cmin_path);
         let find_crash_target_number = cmin_directories.len();
@@ -1254,7 +1320,7 @@ fn init_afl_input(config: &Config) {
     let tests = check_pre_condition(config);
     //let thread_num=std::thread::available_parallelism().unwrap().get();
     //info!("thread num=",{});
-    let mut handles = Vec::<_>::new();
+    let mut handles = Vec::new();
     let mut thread_count = 0;
     for test in tests {
         let replay = test.replace("test", "replay");
@@ -1264,75 +1330,110 @@ fn init_afl_input(config: &Config) {
         let this_afl_init_path = afl_init_path.join(&test);
         let afl_files = arc_afl_files.clone();
         thread_count += 1;
-        let handle = thread::spawn(move || {
-            ensure_empty_dir(&this_afl_init_path);
-            info!("replay_target_path: {:?}", replay_target_path.as_os_str());
-            let mut has_init_file_flag = false;
-            for afl_file in afl_files.iter() {
-                let exit_status = Command::new(replay_target_path.as_os_str())
-                    .arg(afl_file.as_os_str())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .unwrap();
-                if exit_status.success() {
-                    has_init_file_flag = true;
-                    Command::new("cp")
+        handles.push(thread::spawn(move|| {
+                ensure_empty_dir(&this_afl_init_path);
+                // info!("replay_target_path: {:?}", replay_target_path.as_os_str());
+                let mut has_init_file_flag = false;
+                for afl_file in afl_files.iter() {
+                    let exit_status = Command::new(replay_target_path.as_os_str())
                         .arg(afl_file.as_os_str())
-                        .arg(this_afl_init_path.as_os_str())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
                         .status()
                         .unwrap();
+                    if exit_status.success() {
+                        has_init_file_flag = true;
+                        Command::new("cp")
+                            .arg(afl_file.as_os_str())
+                            .arg(this_afl_init_path.as_os_str())
+                            .status()
+                            .unwrap();
+                    }
                 }
-            }
 
-            //tmin:慢
-            //let mut tmin_name = test.clone();
-            //tmin_name.push_str("_tmin");
-            //let this_tmin_path = afl_init_path.join(&tmin_name);
-            //ensure_empty_dir(&this_tmin_path);
-            //let all_raw_afl_files = check_maybe_empty_directory(&this_afl_init_path);
-            //for raw_afl_file in &all_raw_afl_files {
-            //    let filename = last_file_name(raw_afl_file);
-            //    let output_file_path = this_tmin_path.join(filename);
-            //    let args = vec!["afl", "tmin", "-i", raw_afl_file.to_str().unwrap(), "-o", output_file_path.to_str().unwrap(), "--", test_target_path.to_str().unwrap()];
-            //    let _ = Command::new("cargo").args(&args).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
-            //}
+                if !has_init_file_flag {
+                    info!("There's no afl input for {:?}", test);
+                } else {
+                    /* info!("thread#{} afl tmin start", thread_count);
+                    let mut tmin_name = format!("{}_tmin",test);
+                    let this_tmin_path = afl_init_path.join(&tmin_name);
+                    ensure_empty_dir(&this_tmin_path);
+                    let seed_files = check_maybe_empty_directory(&this_afl_init_path);
+                    for seed_file in &seed_files {
+                        let filename = last_file_name(seed_file);
+                        let output_file_path = this_tmin_path.join(filename);
+                        // info!("tmin case = {:?}", seed_file);
+                        let args = vec![
+                            "afl",
+                            "tmin",
+                            "-i",
+                            seed_file.to_str().unwrap(),
+                            "-o",
+                            output_file_path.to_str().unwrap(),
+                            "--",
+                            test_target_path.to_str().unwrap(),
+                        ];
+                        let _ = Command::new("cargo")
+                            .args(&args)
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .unwrap();
+                    }
+                    info!("thread#{} afl tmin end", thread_count); */
 
-            if !has_init_file_flag {
-                debug!("There's no afl input for {:?}", test);
-            } else {
-                let mut cmin_name = test.clone();
-                cmin_name.push_str("_cmin");
-                let this_cmin_path = afl_init_path.join(&cmin_name);
-                ensure_empty_dir(&this_cmin_path);
-                let cmin_args = vec![
-                    "afl",
-                    "cmin",
-                    "-i",
-                    this_afl_init_path.to_str().unwrap(),
-                    "-o",
-                    this_cmin_path.to_str().unwrap(),
-                    "--",
-                    test_target_path.to_str().unwrap(),
-                ];
-                info!("thread#{} afl cmin start", thread_count);
-                let _ = Command::new("cargo")
-                    .args(&cmin_args)
-                    .stdout(Stdio::null())
-                    .status()
-                    .unwrap();
-                info!("thread#{} afl cmin end", thread_count);
-            }
-        });
-        handles.push(handle);
+                    info!("thread#{} afl cmin start", thread_count);
+                    let cmin_name = format!("{}_cmin",test);
+                    let this_cmin_path = afl_init_path.join(&cmin_name);
+                    ensure_empty_dir(&this_cmin_path);
+                    let cmin_args = vec![
+                        "afl",
+                        "cmin",
+                        "-i",
+                        this_afl_init_path.to_str().unwrap(),
+                        "-o",
+                        this_cmin_path.to_str().unwrap(),
+                        "--",
+                        test_target_path.to_str().unwrap(),
+                    ];
+                    let status = Command::new("cargo")
+                        .args(&cmin_args)
+                        .stdout(Stdio::null())
+                        .status()
+                        .unwrap();
+                    info!("thread#{} afl cmin end", thread_count);
+
+                    // Check if the folder is empty
+                    if !this_cmin_path.exists() {
+                        fs::create_dir_all(&this_cmin_path);
+                    }
+
+                    if check_maybe_empty_directory(&this_cmin_path).is_empty(){
+                        fs::write(this_cmin_path.join("seed"), "42"); // Generate an empty file
+                        println!("cmin dir is empty, create '42' for initial seed, good luck!");
+                    }
+                
+                }
+                info!("Thread#{} finish seed selection", thread_count);
+            }));
+            
     }
+    let mut success = 0;
+    let mut fail = 0;
     for handle in handles {
-        handle.join().unwrap();
+        match handle.join() {
+            Result::Ok(_) => success += 1,
+            Result::Err(_) => fail += 1,
+        }
     }
+    info!("success targets = {}, fail targets = {}", success, fail);
 }
 
 fn main() {
-    let _ = env_logger::builder().parse_env("AFL_LOG").try_init();
+    let _ = env_logger::builder()
+        .filter_level(LevelFilter::Trace)
+        .parse_env("AFL_LOG")
+        .try_init();
     let args: Vec<String> = env::args().collect();
     let user_options = UserOptions::new_from_cli(args);
     trace!("{:?}", user_options);
