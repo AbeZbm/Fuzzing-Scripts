@@ -224,6 +224,7 @@ impl UserOptions {
                 continue;
             }
             if loop_count.is_match(s.as_str()) {
+                println!("loop_count");
                 if let Some(input_number) = args_iter.next() {
                     let input_number = input_number.parse::<usize>();
                     if let Ok(input_number) = input_number {
