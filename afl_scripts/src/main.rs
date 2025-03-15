@@ -147,6 +147,7 @@ impl UserOptions {
         let loop_count = Regex::new("(-l$|--loop-count)").unwrap();
 
         while let Some(s) = args_iter.next() {
+            println!("s = {}", s);
             if help_option.is_match(s.as_str()) {
                 println!("{}", help_message());
                 exit(0);
