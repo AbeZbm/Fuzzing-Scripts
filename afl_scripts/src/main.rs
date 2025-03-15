@@ -133,6 +133,7 @@ impl UserOptions {
         let clean_option = Regex::new("-clean").unwrap();
         let build_option = Regex::new("(-b$|--build)").unwrap();
         let fuzz_option = Regex::new("-fuzz").unwrap();
+        let loop_count = Regex::new("(-l$|--loop-count)").unwrap();
         let all_option = Regex::new("(-a$|--all)").unwrap();
         let help_option = Regex::new("(-h$|--help)").unwrap();
         let crash_option = Regex::new("-crash").unwrap();
@@ -144,7 +145,6 @@ impl UserOptions {
         let replay_option = Regex::new("(-r$|--replay)").unwrap();
         let init_afl_input_option = Regex::new("(-i$|--init)").unwrap();
         let disable_asan = Regex::new("(--disable-asan)").unwrap();
-        let loop_count = Regex::new("(-l$|--loop-count)").unwrap();
 
         while let Some(s) = args_iter.next() {
             println!("s = {}", s);
@@ -178,6 +178,18 @@ impl UserOptions {
             if fuzz_option.is_match(s.as_str()) {
                 self.fuzz = true;
                 continue;
+            }
+            if loop_count.is_match(s.as_str()) {
+                println!("loop_count");
+                if let Some(input_number) = args_iter.next() {
+                    let input_number = input_number.parse::<usize>();
+                    if let Ok(input_number) = input_number {
+                        self.loop_count = Some(input_number);
+                        continue;
+                    }
+                }
+                error!("Invalid -l/loop_count flag.");
+                exit(-1);
             }
             if all_option.is_match(s.as_str()) {
                 self.all = true;
@@ -222,18 +234,6 @@ impl UserOptions {
             if self.crate_name.is_none() {
                 self.crate_name = Some(s.clone());
                 continue;
-            }
-            if loop_count.is_match(s.as_str()) {
-                println!("loop_count");
-                if let Some(input_number) = args_iter.next() {
-                    let input_number = input_number.parse::<usize>();
-                    if let Ok(input_number) = input_number {
-                        self.loop_count = Some(input_number);
-                        continue;
-                    }
-                }
-                error!("Invalid -l/loop_count flag.");
-                exit(-1);
             }
             error!("Invalid Options.");
             exit(-1);
