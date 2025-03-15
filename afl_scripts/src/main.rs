@@ -683,7 +683,7 @@ fn build_afl_tests(config: &Config) {
             let env_var = &line[7..]; // Skip "export "
             if let Some((key, value)) = env_var.split_once('=') {
                 info!("export {}={}", key, value);
-                env::set_var(key, value.trim_matches('"'));
+                env::set_var(key, value.trim_matches('\''));
             }
         }
     }
