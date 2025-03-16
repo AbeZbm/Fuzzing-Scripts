@@ -777,7 +777,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let work_dir = config.build_dir.clone();
 
         let handle = thread::spawn(move || {
-            info!("fuzz {:?}", afl_target_path);
+            info!("Fuzzing target {:?}", afl_target_path);
+            info!("Fuzzing in {:?}", work_dir);
             let start = Instant::now();
             let args = vec![
                 "afl",
@@ -793,7 +794,6 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 afl_target_path.to_str().unwrap(),
             ];
             info!("args = {:?}", args);
-            info!("Fuzzing in {:?}", work_dir);
             let output = Command::new("cargo")
                 .args(&args)
                 // .current_dir(test_path_copy.as_os_str())
