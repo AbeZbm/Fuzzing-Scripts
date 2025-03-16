@@ -28,7 +28,7 @@ const AFL_INPUT_DIR: &str = "afl_init";
 const AFL_OUTPUT_DIR: &str = "out";
 const CARGO_TOML: &str = "Cargo.toml";
 const BUILD_SCRIPT: &str = "build";
-const AFL_DEPENDENCY: &str = "afl = \"0.11.1\"";
+const AFL_DEPENDENCY: &str = "afl = \"*\"";
 const TMIN_OUTPUT_DIR: &str = "tmin_output";
 const CMIN_OUTPUT_DIR: &str = "cmin_output";
 const STATISTIC_OUTPUT_FILE: &str = "statistics";
