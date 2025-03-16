@@ -665,7 +665,7 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
     content
 }
 
-fn build_afl_tests(config: &Config) {
+fn set_coverage_env() {
     // Execute `cargo llvm-cov show-env --export-prefix` and capture the output
     info!("Get llvm-cov environment variables");
     let output = Command::new("cargo")
@@ -692,6 +692,10 @@ fn build_afl_tests(config: &Config) {
         .args(&["llvm-cov", "clean", "--workspace"])
         .status()
         .expect("Failed to clean workspace");
+}
+
+fn build_afl_tests(config: &Config) {
+    set_coverage_env();
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
     let mut command=Command::new("cargo");
@@ -746,6 +750,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
 
     let mut threads = Vec::new();
     let val = Arc::new(AtomicUsize::new(0));
+
+    set_coverage_env();
 
     for test in tests {
         let afl_target_path = target_dir.clone().join(test);
