@@ -665,12 +665,13 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
     content
 }
 
-fn set_coverage_env() {
+fn set_coverage_env(work_dir: &Path, clean: bool) {
     info!("Set environment variables in {:?}", std::env::current_dir().unwrap());
     // Execute `cargo llvm-cov show-env --export-prefix` and capture the output
     // info!("Get llvm-cov environment variables");
     let output = Command::new("cargo")
         .args(&["llvm-cov", "show-env", "--export-prefix"])
+        .current_dir(work_dir)
         .output()
         .expect("Failed to get llvm-cov environment variables");
     if !output.status.success() {
@@ -689,17 +690,21 @@ fn set_coverage_env() {
         }
     }
     // Clean the workspace
-    let _ = Command::new("cargo")
-        .args(&["llvm-cov", "clean", "--workspace"])
-        .status()
-        .expect("Failed to clean workspace");
+    if clean {
+        info!("Clean workspace");
+        let _ = Command::new("cargo")
+            .args(&["llvm-cov", "clean", "--workspace"])
+            .current_dir(work_dir)
+            .status()
+            .expect("Failed to clean workspace");
+    }
 }
 
 fn build_afl_tests(config: &Config) {
-    set_coverage_env();
+    set_coverage_env(&config.build_dir, true);
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
-    info!("Build_afl_tests in: {:?}", &config.build_dir);
+    info!("Build afl tests in: {:?}", &config.build_dir);
     let mut command=Command::new("cargo");
     command.arg("afl")
         .arg("build")
@@ -753,7 +758,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     let mut threads = Vec::new();
     let val = Arc::new(AtomicUsize::new(0));
 
-    set_coverage_env();
+    set_coverage_env(&config.build_dir, false);
 
     for test in tests {
         let afl_target_path = target_dir.clone().join(test);
@@ -768,6 +773,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let val_copy = val.clone();
 
         let loop_count = config.loop_count.unwrap_or(20);
+
+        let work_dir = config.build_dir.clone();
 
         let handle = thread::spawn(move || {
             info!("fuzz {:?}", afl_target_path);
@@ -786,13 +793,14 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 afl_target_path.to_str().unwrap(),
             ];
             info!("args = {:?}", args);
-            info!("Fuzzing in {:?}", std::env::current_dir().unwrap());
+            info!("Fuzzing in {:?}", work_dir);
             let output = Command::new("cargo")
                 .args(&args)
                 // .current_dir(test_path_copy.as_os_str())
                 .env("AFL_EXIT_WHEN_DONE", "1")
                 .env("AFL_NO_AFFINITY", "1")
                 .env("AFL_FUZZER_LOOPCOUNT", loop_count.to_string())
+                .current_dir(&work_dir)
                 // .stdout(Stdio::null())
                 .output()
                 .unwrap();
