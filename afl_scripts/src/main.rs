@@ -666,7 +666,7 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
 }
 
 fn set_coverage_env(work_dir: &Path, clean: bool) {
-    info!("Set environment variables in {:?}", std::env::current_dir().unwrap());
+    info!("Set environment variables in {:?}", work_dir);
     // Execute `cargo llvm-cov show-env --export-prefix` and capture the output
     // info!("Get llvm-cov environment variables");
     let output = Command::new("cargo")
@@ -830,7 +830,6 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 error!("stdout = {:?}",String::from_utf8(output.stdout));
                 error!("stderr = {:?}",String::from_utf8(output.stderr));
                 error!("{:?} fails.", afl_target_path);
-
             }
         });
 
