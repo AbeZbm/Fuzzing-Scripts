@@ -666,8 +666,9 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
 }
 
 fn set_coverage_env() {
+    info!("Set environment variables in {:?}", std::env::current_dir().unwrap());
     // Execute `cargo llvm-cov show-env --export-prefix` and capture the output
-    info!("Get llvm-cov environment variables");
+    // info!("Get llvm-cov environment variables");
     let output = Command::new("cargo")
         .args(&["llvm-cov", "show-env", "--export-prefix"])
         .output()
@@ -676,13 +677,13 @@ fn set_coverage_env() {
         panic!("Command failed: {}", String::from_utf8_lossy(&output.stderr));
     }
     // Parse the output and set environment variables
-    info!("Set llvm-cov environment variables");
+    // info!("Set llvm-cov environment variables");
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
     for line in output_str.lines() {
         if line.starts_with("export ") {
             let env_var = &line[7..]; // Skip "export "
             if let Some((key, value)) = env_var.split_once('=') {
-                info!("export {}={}", key, value);
+                info!("export {}={}", key, value.trim_matches('\''));
                 env::set_var(key, value.trim_matches('\''));
             }
         }
@@ -698,6 +699,7 @@ fn build_afl_tests(config: &Config) {
     set_coverage_env();
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
+    info!("Build_afl_tests in: {:?}", &config.build_dir);
     let mut command=Command::new("cargo");
     command.arg("afl")
         .arg("build")
@@ -784,6 +786,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 afl_target_path.to_str().unwrap(),
             ];
             info!("args = {:?}", args);
+            info!("Fuzzing in {:?}", std::env::current_dir().unwrap());
             let output = Command::new("cargo")
                 .args(&args)
                 // .current_dir(test_path_copy.as_os_str())
