@@ -810,6 +810,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     env::set_var("AFL_NO_AFFINITY", "1");
     env::set_var("AFL_FUZZER_LOOPCOUNT", loop_count.to_string());
 
+    let timeout = config.timeout.map_or("".to_string(), |v| v.to_string());
+
     for test in tests {
         let afl_target_path = target_dir.clone().join(test);
         let afl_output_dir = output_dir.clone().join(test);
@@ -823,28 +825,28 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let val_copy = val.clone();
 
         let work_dir = config.build_dir.clone();
+        let timeout = timeout.clone();
 
         let handle = thread::spawn(move || {
             info!("Fuzzing target {:?}", afl_target_path);
             info!("Fuzzing in {:?}", work_dir);
             let start = Instant::now();
-            let args = vec![
-                "afl",
-                "fuzz",
-                //"-D", // deterministic fuzzing
-                "-c",
-                "-",
+            let mut args = vec!["afl", "fuzz", "-c", "-"];
+            if !timeout.is_empty() {
+                args.push("-V");
+                args.push(&timeout);
+            }
+            args.extend([
                 "-i",
                 afl_input_path.to_str().unwrap(),
                 "-o",
                 afl_output_dir.to_str().unwrap(),
                 "--",
                 afl_target_path.to_str().unwrap(),
-            ];
+            ]);
             info!("Args: {:?}", args.join(" "));
             let output = Command::new("cargo")
                 .args(&args)
-                // .current_dir(test_path_copy.as_os_str())
                 .current_dir(&work_dir)
                 // .stdout(Stdio::null())
                 .output()
