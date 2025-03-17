@@ -685,10 +685,10 @@ fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
         if line.starts_with("export ") {
             let env_var = &line[7..]; // Skip "export "
             if let Some((key, value)) = env_var.split_once('=') {
-                let mut value = value.trim_matches('\'');
-                if key == "RUSTFLAGS" {
-                    value = "-C instrument-coverage";
-                }
+                let value = value.trim_matches('\'');
+                // if key == "RUSTFLAGS" {
+                //     value = "-C instrument-coverage";
+                // }
                 info!("export {} = {}", key, value);
                 envs.insert(key.to_string(), value.to_string());
             }
@@ -707,7 +707,7 @@ fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
 }
 
 fn build_afl_tests(config: &Config) {
-    let cov_envs = get_coverage_env(&config.crate_dir, true);
+    let cov_envs = get_coverage_env(&config.build_dir, true);
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
     let work_dir = &config.build_dir;
@@ -724,7 +724,13 @@ fn build_afl_tests(config: &Config) {
         .stdout(Stdio::from(output_file.try_clone().unwrap()))
         .stderr(Stdio::from(output_file));
     if !config.disable_asan{
-        command.env("RUSTFLAGS","-Zsanitizer=address");
+        let rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+        let new_rustflags = if rustflags.is_empty() {
+            "-Zsanitizer=address".to_string()
+        } else {
+            format!("{} -Zsanitizer=address", rustflags)
+        };
+        command.env("RUSTFLAGS",new_rustflags);
     }
     command.output().unwrap();
 }
@@ -782,7 +788,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
 
         let val_copy = val.clone();
 
-        let work_dir = config.crate_dir.clone();
+        let work_dir = config.build_dir.clone();
         let envs_copy = cov_envs.clone();
 
         let handle = thread::spawn(move || {
