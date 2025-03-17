@@ -9,6 +9,7 @@ use log::LevelFilter;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fs::File;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -19,7 +20,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::fs::File;
 
 const CRASH_DIR: &str = "default/crashes";
 const TEST_FILE_DIR: &str = "test_files";
@@ -35,8 +35,6 @@ const STATISTIC_OUTPUT_FILE: &str = "statistics";
 const EXIT_TIME_DIR: &str = "exit_time";
 const SHOWMAP_DIR: &str = "showmap";
 
-
-
 pub struct Config {
     pub crate_name: String,
     pub crate_dir: PathBuf,      //
@@ -47,6 +45,7 @@ pub struct Config {
     pub target_dir: PathBuf,     // <crate>/fuzz_target/build/target/debug
     pub disable_asan: bool,
     pub loop_count: Option<usize>,
+    pub timeout: Option<usize>,
 }
 
 impl Config {
@@ -58,8 +57,9 @@ impl Config {
         let afl_input_dir = test_dir.join(AFL_INPUT_DIR);
         let afl_output_dir = test_dir.join(AFL_OUTPUT_DIR);
         let target_dir = build_dir.join("target").join("debug");
-        let disable_asan=options.disable_asan;
+        let disable_asan = options.disable_asan;
         let loop_count = options.loop_count;
+        let timeout = options.timeout;
         Config {
             crate_name,
             crate_dir,
@@ -70,6 +70,7 @@ impl Config {
             target_dir,
             disable_asan,
             loop_count,
+            timeout,
         }
     }
 }
@@ -93,6 +94,8 @@ struct UserOptions {
     disable_asan: bool,
     all: bool,
     loop_count: Option<usize>,
+    timeout: Option<usize>,
+    cov: bool,
 }
 
 impl UserOptions {
@@ -115,6 +118,8 @@ impl UserOptions {
             init_afl_input: false,
             disable_asan: false,
             loop_count: None,
+            timeout: None,
+            cov: false,
         }
     }
 
@@ -133,7 +138,8 @@ impl UserOptions {
         let clean_option = Regex::new("-clean").unwrap();
         let build_option = Regex::new("(-b$|--build)").unwrap();
         let fuzz_option = Regex::new("-fuzz").unwrap();
-        let loop_count = Regex::new("(-l$|--loop-count)").unwrap();
+        let loop_count_option = Regex::new("(-l$|--loop-count)").unwrap();
+        let timeout_option = Regex::new("(--timeout)").unwrap();
         let all_option = Regex::new("(-a$|--all)").unwrap();
         let help_option = Regex::new("(-h$|--help)").unwrap();
         let crash_option = Regex::new("-crash").unwrap();
@@ -145,6 +151,7 @@ impl UserOptions {
         let replay_option = Regex::new("(-r$|--replay)").unwrap();
         let init_afl_input_option = Regex::new("(-i$|--init)").unwrap();
         let disable_asan = Regex::new("(--disable-asan)").unwrap();
+        let cov_option = Regex::new("-cov").unwrap();
 
         while let Some(s) = args_iter.next() {
             if help_option.is_match(s.as_str()) {
@@ -178,7 +185,7 @@ impl UserOptions {
                 self.fuzz = true;
                 continue;
             }
-            if loop_count.is_match(s.as_str()) {
+            if loop_count_option.is_match(s.as_str()) {
                 if let Some(input_number) = args_iter.next() {
                     let input_number = input_number.parse::<usize>();
                     if let Ok(input_number) = input_number {
@@ -187,6 +194,17 @@ impl UserOptions {
                     }
                 }
                 error!("Invalid -l/loop_count flag.");
+                exit(-1);
+            }
+            if timeout_option.is_match(s.as_str()) {
+                if let Some(input_number) = args_iter.next() {
+                    let input_number = input_number.parse::<usize>();
+                    if let Ok(input_number) = input_number {
+                        self.timeout = Some(input_number);
+                        continue;
+                    }
+                }
+                error!("Invalid --timeout flag.");
                 exit(-1);
             }
             if all_option.is_match(s.as_str()) {
@@ -225,8 +243,12 @@ impl UserOptions {
                 self.init_afl_input = true;
                 continue;
             }
-            if disable_asan.is_match(s.as_str()){
-                self.disable_asan=true;
+            if disable_asan.is_match(s.as_str()) {
+                self.disable_asan = true;
+                continue;
+            }
+            if cov_option.is_match(s.as_str()) {
+                self.cov = true;
                 continue;
             }
             if self.crate_name.is_none() {
@@ -257,6 +279,7 @@ FLAGS:
     -b,--build          init test directory and build afl test files
     -fuzz               run afl
     -l,--loop-count     set loop count for each fuzz target
+    --timeout           set timeout for each fuzz target (in seconds)
     -a,--all            clean,build,and fuzz(may corrupt history data)
     -crash              check if any crash was found
     -p,--prepare        prepare test files
@@ -265,6 +288,7 @@ FLAGS:
     -r,--replay         replay crash files to check whether it's real crash
     -s,--statistic      output statictic fuzz result info for a crate
     -i,--init           init afl input files for each target
+    -cov                get coverage results
 "
     //-showmap            output coverage infomation generated by showmap(showmap is not well designed)
 }
@@ -364,6 +388,11 @@ fn do_work(user_options: &UserOptions) {
         check_build(crate_name, &tests);
         fuzz_it(crate_name, &tests);
         exit(0); */
+    }
+    if user_options.cov {
+        info!("get coverage for {}.", crate_name);
+        get_coverage(&config);
+        exit(0);
     }
     //default work
     info!("Nothing to do!");
@@ -608,14 +637,13 @@ fn init_test_dir(config: &Config, tests: &[String]) {
         // Edit here to add dependency
         let extern_dependencies = ["serde"];
         // let extern_dependencies = Vec::<String>::new();
-        for dep in extern_dependencies{
+        for dep in extern_dependencies {
             dependencies.push_str(&format!("{} = \"*\"\n", dep));
         }
-        file.write_all(dependencies.as_bytes())
-            .unwrap_or_else(|_| {
-                error!("write file {:?} failed.", cargo_toml_path);
-                exit(-1);
-            });
+        file.write_all(dependencies.as_bytes()).unwrap_or_else(|_| {
+            error!("write file {:?} failed.", cargo_toml_path);
+            exit(-1);
+        });
     };
 
     //为每个test crate添加依赖
@@ -675,7 +703,10 @@ fn set_coverage_env(work_dir: &Path, clean: bool) {
         .output()
         .expect("Failed to get llvm-cov environment variables");
     if !output.status.success() {
-        panic!("Command failed: {}", String::from_utf8_lossy(&output.stderr));
+        panic!(
+            "Command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     // Parse the output and get environment variables
     // info!("Set llvm-cov environment variables");
@@ -688,7 +719,7 @@ fn set_coverage_env(work_dir: &Path, clean: bool) {
                 if key == "RUSTFLAGS" {
                     value += " -Z coverage-options=branch";
                 }
-                info!("export {} = {}", key, value);
+                info!("export {}={}", key, value);
                 env::set_var(key, value);
             }
         }
@@ -706,7 +737,7 @@ fn set_coverage_env(work_dir: &Path, clean: bool) {
 
 fn build_afl_tests(config: &Config) {
     set_coverage_env(&config.build_dir, true);
-    if !config.disable_asan{
+    if !config.disable_asan {
         let rustflags = env::var("RUSTFLAGS").unwrap_or_default();
         let new_rustflags = if rustflags.is_empty() {
             "-Zsanitizer=address".to_string()
@@ -716,12 +747,13 @@ fn build_afl_tests(config: &Config) {
         env::set_var("RUSTFLAGS", new_rustflags);
     }
 
-    println!("Build Log in: {:?}",config.test_dir.join("build.log"));
+    println!("Build Log in: {:?}", config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
     let work_dir = &config.build_dir;
     info!("Build afl tests in: {:?}", work_dir);
-    let mut command=Command::new("cargo");
-    command.arg("afl")
+    let mut command = Command::new("cargo");
+    command
+        .arg("afl")
         .arg("build")
         .arg("--ignore-rust-version")
         // .arg("--offline")
@@ -737,16 +769,16 @@ fn check_build(config: &Config, tests: &[String]) {
     let target_path = &config.target_dir;
 
     let mut flag = true;
-    let mut success_count=0;
-    let mut fail_count=0;
+    let mut success_count = 0;
+    let mut fail_count = 0;
     for test in tests {
         let build_afl_file_path = target_path.join(test);
         if !build_afl_file_path.is_file() {
             flag = false;
-            fail_count+=1;
+            fail_count += 1;
             error!("{} build failed.", test);
         } else {
-            success_count+=1;
+            success_count += 1;
         }
         let replay = test.clone().replace("test", "replay");
         let build_replay_file_path = target_path.join(&replay);
@@ -758,7 +790,7 @@ fn check_build(config: &Config, tests: &[String]) {
     if flag {
         info!("check build success");
     }
-    info!("build success={}, build fail={}",success_count,fail_count);
+    info!("build success={}, build fail={}", success_count, fail_count);
 }
 
 fn fuzz_it(config: &Config, tests: &[String]) {
@@ -785,7 +817,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
             fs::remove_file(&afl_output_dir).unwrap();
         }
 
-        let afl_input_path = config.afl_input_dir.join(test.to_string()+"_cmin");
+        let afl_input_path = config.afl_input_dir.join(test.to_string() + "_cmin");
         let exit_time_file_path = exit_time_path.join(test);
 
         let val_copy = val.clone();
@@ -817,7 +849,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 // .stdout(Stdio::null())
                 .output()
                 .unwrap();
-            let exit_status=output.status;
+            let exit_status = output.status;
             info!("{:?} {:?}", afl_target_path, exit_status);
             let cost_time = start.elapsed().as_secs();
 
@@ -840,8 +872,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                         exit(-1);
                     });
             } else {
-                error!("stdout = {:?}",String::from_utf8(output.stdout));
-                error!("stderr = {:?}",String::from_utf8(output.stderr));
+                error!("stdout = {:?}", String::from_utf8(output.stdout));
+                error!("stderr = {:?}", String::from_utf8(output.stderr));
                 error!("{:?} fails.", afl_target_path);
             }
         });
@@ -859,7 +891,6 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         fs::remove_dir_all(&statistic_file_path).unwrap();
     }
     let mut statisticfile = fs::File::create(&statistic_file_path).unwrap();
-
 
     let title = "time\tcrashes\ttargets\tdetails\n";
     statisticfile
@@ -893,6 +924,31 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     //确保所有的线程都已经退出
     for handle in threads {
         handle.join().unwrap();
+    }
+}
+
+fn get_coverage(config: &Config) {
+    set_coverage_env(&config.build_dir, false);
+    // let work_dir = &config.build_dir;
+    let output = Command::new("cargo")
+        .args(&[
+            "llvm-cov",
+            "report",
+            "--ignore-filename-regex='test_|replay_'",
+            "--branch",
+            "--cobertura",
+            "--output-path",
+            "llvm_cov.xml",
+        ])
+        // .current_dir(work_dir)
+        .output()
+        .expect("Failed to get coverage");
+    let exit_status = output.status;
+    if exit_status.success() {
+        info!("Get code coverage succeed.");
+    } else {
+        error!("stdout = {:?}", String::from_utf8(output.stdout));
+        error!("stderr = {:?}", String::from_utf8(output.stderr));
     }
 }
 
@@ -1151,7 +1207,7 @@ fn replay_crashes(config: &Config) {
                     let crash_file_name = crash_file.to_str().unwrap();
                     let output = Command::new(replay_file_name)
                         .arg(crash_file_name)
-                        .env("RUST_BACKTRACE","1")
+                        .env("RUST_BACKTRACE", "1")
                         .output()
                         .unwrap();
                     let mut command = replay_file_name.to_string();
@@ -1188,7 +1244,7 @@ fn replay_crashes(config: &Config) {
         }
         let output = Command::new(replay_file_name)
             .arg(crash_file_name)
-            .env("RUST_BACKTRACE","1")
+            .env("RUST_BACKTRACE", "1")
             .output()
             .unwrap();
         let mut command = replay_file_name.to_string();
@@ -1407,93 +1463,91 @@ fn init_afl_input(config: &Config) {
         let this_afl_init_path = afl_init_path.join(&test);
         let afl_files = arc_afl_files.clone();
         thread_count += 1;
-        handles.push(thread::spawn(move|| {
-                ensure_empty_dir(&this_afl_init_path);
-                // info!("replay_target_path: {:?}", replay_target_path.as_os_str());
-                let mut has_init_file_flag = false;
-                for afl_file in afl_files.iter() {
-                    let exit_status = Command::new(replay_target_path.as_os_str())
+        handles.push(thread::spawn(move || {
+            ensure_empty_dir(&this_afl_init_path);
+            // info!("replay_target_path: {:?}", replay_target_path.as_os_str());
+            let mut has_init_file_flag = false;
+            for afl_file in afl_files.iter() {
+                let exit_status = Command::new(replay_target_path.as_os_str())
+                    .arg(afl_file.as_os_str())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap();
+                if exit_status.success() {
+                    has_init_file_flag = true;
+                    Command::new("cp")
                         .arg(afl_file.as_os_str())
+                        .arg(this_afl_init_path.as_os_str())
+                        .status()
+                        .unwrap();
+                }
+            }
+
+            if !has_init_file_flag {
+                info!("There's no afl input for {:?}", test);
+            } else {
+                /* info!("thread#{} afl tmin start", thread_count);
+                let mut tmin_name = format!("{}_tmin",test);
+                let this_tmin_path = afl_init_path.join(&tmin_name);
+                ensure_empty_dir(&this_tmin_path);
+                let seed_files = check_maybe_empty_directory(&this_afl_init_path);
+                for seed_file in &seed_files {
+                    let filename = last_file_name(seed_file);
+                    let output_file_path = this_tmin_path.join(filename);
+                    // info!("tmin case = {:?}", seed_file);
+                    let args = vec![
+                        "afl",
+                        "tmin",
+                        "-i",
+                        seed_file.to_str().unwrap(),
+                        "-o",
+                        output_file_path.to_str().unwrap(),
+                        "--",
+                        test_target_path.to_str().unwrap(),
+                    ];
+                    let _ = Command::new("cargo")
+                        .args(&args)
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .status()
                         .unwrap();
-                    if exit_status.success() {
-                        has_init_file_flag = true;
-                        Command::new("cp")
-                            .arg(afl_file.as_os_str())
-                            .arg(this_afl_init_path.as_os_str())
-                            .status()
-                            .unwrap();
-                    }
+                }
+                info!("thread#{} afl tmin end", thread_count); */
+
+                info!("thread#{} afl cmin start", thread_count);
+                let cmin_name = format!("{}_cmin", test);
+                let this_cmin_path = afl_init_path.join(&cmin_name);
+                ensure_empty_dir(&this_cmin_path);
+                let cmin_args = vec![
+                    "afl",
+                    "cmin",
+                    "-i",
+                    this_afl_init_path.to_str().unwrap(),
+                    "-o",
+                    this_cmin_path.to_str().unwrap(),
+                    "--",
+                    test_target_path.to_str().unwrap(),
+                ];
+                let status = Command::new("cargo")
+                    .args(&cmin_args)
+                    .stdout(Stdio::null())
+                    .status()
+                    .unwrap();
+                info!("thread#{} afl cmin end", thread_count);
+
+                // Check if the folder is empty
+                if !this_cmin_path.exists() {
+                    fs::create_dir_all(&this_cmin_path).unwrap();
                 }
 
-                if !has_init_file_flag {
-                    info!("There's no afl input for {:?}", test);
-                } else {
-                    /* info!("thread#{} afl tmin start", thread_count);
-                    let mut tmin_name = format!("{}_tmin",test);
-                    let this_tmin_path = afl_init_path.join(&tmin_name);
-                    ensure_empty_dir(&this_tmin_path);
-                    let seed_files = check_maybe_empty_directory(&this_afl_init_path);
-                    for seed_file in &seed_files {
-                        let filename = last_file_name(seed_file);
-                        let output_file_path = this_tmin_path.join(filename);
-                        // info!("tmin case = {:?}", seed_file);
-                        let args = vec![
-                            "afl",
-                            "tmin",
-                            "-i",
-                            seed_file.to_str().unwrap(),
-                            "-o",
-                            output_file_path.to_str().unwrap(),
-                            "--",
-                            test_target_path.to_str().unwrap(),
-                        ];
-                        let _ = Command::new("cargo")
-                            .args(&args)
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .status()
-                            .unwrap();
-                    }
-                    info!("thread#{} afl tmin end", thread_count); */
-
-                    info!("thread#{} afl cmin start", thread_count);
-                    let cmin_name = format!("{}_cmin",test);
-                    let this_cmin_path = afl_init_path.join(&cmin_name);
-                    ensure_empty_dir(&this_cmin_path);
-                    let cmin_args = vec![
-                        "afl",
-                        "cmin",
-                        "-i",
-                        this_afl_init_path.to_str().unwrap(),
-                        "-o",
-                        this_cmin_path.to_str().unwrap(),
-                        "--",
-                        test_target_path.to_str().unwrap(),
-                    ];
-                    let status = Command::new("cargo")
-                        .args(&cmin_args)
-                        .stdout(Stdio::null())
-                        .status()
-                        .unwrap();
-                    info!("thread#{} afl cmin end", thread_count);
-
-                    // Check if the folder is empty
-                    if !this_cmin_path.exists() {
-                        fs::create_dir_all(&this_cmin_path).unwrap();
-                    }
-
-                    if check_maybe_empty_directory(&this_cmin_path).is_empty(){
-                        fs::write(this_cmin_path.join("seed"), "42").unwrap(); // Generate an empty file
-                        println!("cmin dir is empty, create '42' for initial seed, good luck!");
-                    }
-                
+                if check_maybe_empty_directory(&this_cmin_path).is_empty() {
+                    fs::write(this_cmin_path.join("seed"), "42").unwrap(); // Generate an empty file
+                    println!("cmin dir is empty, create '42' for initial seed, good luck!");
                 }
-                info!("Thread#{} finish seed selection", thread_count);
-            }));
-            
+            }
+            info!("Thread#{} finish seed selection", thread_count);
+        }));
     }
     let mut success = 0;
     let mut fail = 0;
