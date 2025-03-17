@@ -706,7 +706,7 @@ fn build_afl_tests(config: &Config) {
     let cov_envs = get_coverage_env(&config.crate_dir, true);
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
-    let work_dir = &config.crate_dir;
+    let work_dir = &config.build_dir;
     info!("Build afl tests in: {:?}", work_dir);
     let mut command=Command::new("cargo");
     command.arg("afl")
