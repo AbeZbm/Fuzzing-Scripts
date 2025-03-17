@@ -665,7 +665,7 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
     content
 }
 
-fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
+fn set_coverage_env(work_dir: &Path, clean: bool) {
     info!("Set environment variables in {:?}", work_dir);
     // Execute `cargo llvm-cov show-env --export-prefix` and capture the output
     // info!("Get llvm-cov environment variables");
@@ -679,18 +679,17 @@ fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
     }
     // Parse the output and get environment variables
     // info!("Set llvm-cov environment variables");
-    let mut envs = HashMap::new();
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
     for line in output_str.lines() {
         if line.starts_with("export ") {
             let env_var = &line[7..]; // Skip "export "
             if let Some((key, value)) = env_var.split_once('=') {
-                let value = value.trim_matches('\'');
-                // if key == "RUSTFLAGS" {
-                //     value = "-C instrument-coverage";
-                // }
+                let mut value = value.trim_matches('\'').to_string();
+                if key == "RUSTFLAGS" {
+                    value += " -Z coverage-options=branch";
+                }
                 info!("export {} = {}", key, value);
-                envs.insert(key.to_string(), value.to_string());
+                env::set_var(key, value);
             }
         }
     }
@@ -703,11 +702,20 @@ fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
             .status()
             .expect("Failed to clean workspace");
     }
-    envs
 }
 
 fn build_afl_tests(config: &Config) {
-    let cov_envs = get_coverage_env(&config.build_dir, true);
+    set_coverage_env(&config.build_dir, true);
+    if !config.disable_asan{
+        let rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+        let new_rustflags = if rustflags.is_empty() {
+            "-Zsanitizer=address".to_string()
+        } else {
+            format!("{} -Zsanitizer=address", rustflags)
+        };
+        env::set_var("RUSTFLAGS", new_rustflags);
+    }
+
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
     let work_dir = &config.build_dir;
@@ -719,19 +727,9 @@ fn build_afl_tests(config: &Config) {
         // .arg("--offline")
         .arg("--keep-going")
         .arg("-Zunstable-options")
-        .envs(&cov_envs)
         .current_dir(work_dir)
         .stdout(Stdio::from(output_file.try_clone().unwrap()))
         .stderr(Stdio::from(output_file));
-    if !config.disable_asan{
-        let rustflags = cov_envs.get("RUSTFLAGS").cloned().unwrap_or_default();
-        let new_rustflags = if rustflags.is_empty() {
-            "-Zsanitizer=address".to_string()
-        } else {
-            format!("{} -Zsanitizer=address", rustflags)
-        };
-        command.env("RUSTFLAGS",new_rustflags);
-    }
     command.output().unwrap();
 }
 
@@ -772,9 +770,13 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     let mut threads = Vec::new();
     let val = Arc::new(AtomicUsize::new(0));
 
-    let cov_envs = get_coverage_env(&config.build_dir, false);
     let loop_count = config.loop_count.unwrap_or(20);
     info!("loop count = {}", loop_count);
+
+    set_coverage_env(&config.build_dir, false);
+    env::set_var("AFL_EXIT_WHEN_DONE", "1");
+    env::set_var("AFL_NO_AFFINITY", "1");
+    env::set_var("AFL_FUZZER_LOOPCOUNT", loop_count.to_string());
 
     for test in tests {
         let afl_target_path = target_dir.clone().join(test);
@@ -789,7 +791,6 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let val_copy = val.clone();
 
         let work_dir = config.build_dir.clone();
-        let envs_copy = cov_envs.clone();
 
         let handle = thread::spawn(move || {
             info!("Fuzzing target {:?}", afl_target_path);
@@ -812,10 +813,6 @@ fn fuzz_it(config: &Config, tests: &[String]) {
             let output = Command::new("cargo")
                 .args(&args)
                 // .current_dir(test_path_copy.as_os_str())
-                .env("AFL_EXIT_WHEN_DONE", "1")
-                .env("AFL_NO_AFFINITY", "1")
-                .env("AFL_FUZZER_LOOPCOUNT", loop_count.to_string())
-                .envs(&envs_copy)
                 .current_dir(&work_dir)
                 // .stdout(Stdio::null())
                 .output()
