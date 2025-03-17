@@ -665,7 +665,7 @@ fn cargo_workspace_file_content(tests: &[String]) -> String {
     content
 }
 
-fn set_coverage_env(work_dir: &Path, clean: bool) {
+fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
     info!("Set environment variables in {:?}", work_dir);
     // Execute `cargo llvm-cov show-env --export-prefix` and capture the output
     // info!("Get llvm-cov environment variables");
@@ -677,15 +677,16 @@ fn set_coverage_env(work_dir: &Path, clean: bool) {
     if !output.status.success() {
         panic!("Command failed: {}", String::from_utf8_lossy(&output.stderr));
     }
-    // Parse the output and set environment variables
+    // Parse the output and get environment variables
     // info!("Set llvm-cov environment variables");
+    let mut envs = HashMap::new();
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
     for line in output_str.lines() {
         if line.starts_with("export ") {
             let env_var = &line[7..]; // Skip "export "
             if let Some((key, value)) = env_var.split_once('=') {
-                info!("export {}={}", key, value.trim_matches('\''));
-                env::set_var(key, value.trim_matches('\''));
+                info!("export {} = {}", key, value.trim_matches('\''));
+                envs.insert(key.to_string(), value.trim_matches('\'').to_string());
             }
         }
     }
@@ -698,13 +699,15 @@ fn set_coverage_env(work_dir: &Path, clean: bool) {
             .status()
             .expect("Failed to clean workspace");
     }
+    envs
 }
 
 fn build_afl_tests(config: &Config) {
-    set_coverage_env(&config.build_dir, true);
+    let cov_envs = get_coverage_env(&config.build_dir, true);
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
-    info!("Build afl tests in: {:?}", &config.build_dir);
+    let work_dir = &config.build_dir;
+    info!("Build afl tests in: {:?}", work_dir);
     let mut command=Command::new("cargo");
     command.arg("afl")
         .arg("build")
@@ -712,7 +715,8 @@ fn build_afl_tests(config: &Config) {
         // .arg("--offline")
         .arg("--keep-going")
         .arg("-Zunstable-options")
-        .current_dir(&config.build_dir)
+        .envs(&cov_envs)
+        .current_dir(work_dir)
         .stdout(Stdio::from(output_file.try_clone().unwrap()))
         .stderr(Stdio::from(output_file));
     if !config.disable_asan{
@@ -758,7 +762,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     let mut threads = Vec::new();
     let val = Arc::new(AtomicUsize::new(0));
 
-    set_coverage_env(&config.build_dir, false);
+    let cov_envs = get_coverage_env(&config.build_dir, false);
 
     for test in tests {
         let afl_target_path = target_dir.clone().join(test);
@@ -775,6 +779,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let loop_count = config.loop_count.unwrap_or(20);
 
         let work_dir = config.build_dir.clone();
+        let envs_copy = cov_envs.clone();
 
         let handle = thread::spawn(move || {
             info!("Fuzzing target {:?}", afl_target_path);
@@ -800,6 +805,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 .env("AFL_EXIT_WHEN_DONE", "1")
                 .env("AFL_NO_AFFINITY", "1")
                 .env("AFL_FUZZER_LOOPCOUNT", loop_count.to_string())
+                .envs(&envs_copy)
                 .current_dir(&work_dir)
                 // .stdout(Stdio::null())
                 .output()
