@@ -931,7 +931,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
 
 fn get_coverage(config: &Config) {
     set_coverage_env(&config.build_dir, false);
-    // let work_dir = &config.build_dir;
+    let work_dir = &config.build_dir;
+    let covfile = config.crate_dir.join("llvm_cov.xml");
     let output = Command::new("cargo")
         .args(&[
             "llvm-cov",
@@ -940,9 +941,9 @@ fn get_coverage(config: &Config) {
             "--branch",
             "--cobertura",
             "--output-path",
-            "llvm_cov.xml",
+            covfile.to_str().unwrap(),
         ])
-        // .current_dir(work_dir)
+        .current_dir(work_dir)
         .output()
         .expect("Failed to get coverage");
     let exit_status = output.status;
