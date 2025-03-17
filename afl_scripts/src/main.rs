@@ -685,8 +685,12 @@ fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
         if line.starts_with("export ") {
             let env_var = &line[7..]; // Skip "export "
             if let Some((key, value)) = env_var.split_once('=') {
-                info!("export {} = {}", key, value.trim_matches('\''));
-                envs.insert(key.to_string(), value.trim_matches('\'').to_string());
+                let mut value = value.trim_matches('\'');
+                if key == "RUSTFLAGS" {
+                    value = "-C instrument-coverage";
+                }
+                info!("export {} = {}", key, value);
+                envs.insert(key.to_string(), value.to_string());
             }
         }
     }
