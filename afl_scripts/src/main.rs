@@ -933,6 +933,7 @@ fn get_coverage(config: &Config) {
     set_coverage_env(&config.build_dir, false);
     let work_dir = &config.build_dir;
     let covfile = config.crate_dir.join("llvm_cov.xml");
+    info!("Generating coverage file in {:?}", covfile);
     let output = Command::new("cargo")
         .args(&[
             "llvm-cov",
