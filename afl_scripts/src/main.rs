@@ -763,6 +763,8 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     let val = Arc::new(AtomicUsize::new(0));
 
     let cov_envs = get_coverage_env(&config.build_dir, false);
+    let loop_count = config.loop_count.unwrap_or(20);
+    info!("loop count = {}", loop_count);
 
     for test in tests {
         let afl_target_path = target_dir.clone().join(test);
@@ -775,9 +777,6 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let exit_time_file_path = exit_time_path.join(test);
 
         let val_copy = val.clone();
-
-        let loop_count = config.loop_count.unwrap_or(20);
-        info!("loop count = {}", loop_count);
 
         let work_dir = config.build_dir.clone();
         let envs_copy = cov_envs.clone();
@@ -799,7 +798,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 "--",
                 afl_target_path.to_str().unwrap(),
             ];
-            info!("args = {}", args.join(" "));
+            info!("Args: {:?}", args.join(" "));
             let output = Command::new("cargo")
                 .args(&args)
                 // .current_dir(test_path_copy.as_os_str())
