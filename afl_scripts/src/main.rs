@@ -777,6 +777,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
         let val_copy = val.clone();
 
         let loop_count = config.loop_count.unwrap_or(20);
+        info!("loop count = {}", loop_count);
 
         let work_dir = config.build_dir.clone();
         let envs_copy = cov_envs.clone();
@@ -798,7 +799,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
                 "--",
                 afl_target_path.to_str().unwrap(),
             ];
-            info!("args = {:?}", args);
+            info!("args = {}", args.join(" "));
             let output = Command::new("cargo")
                 .args(&args)
                 // .current_dir(test_path_copy.as_os_str())
