@@ -724,7 +724,7 @@ fn build_afl_tests(config: &Config) {
         .stdout(Stdio::from(output_file.try_clone().unwrap()))
         .stderr(Stdio::from(output_file));
     if !config.disable_asan{
-        let rustflags = env::var("RUSTFLAGS").unwrap_or_default();
+        let rustflags = cov_envs.get("RUSTFLAGS").cloned().unwrap_or_default();
         let new_rustflags = if rustflags.is_empty() {
             "-Zsanitizer=address".to_string()
         } else {
