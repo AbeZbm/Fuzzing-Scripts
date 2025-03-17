@@ -937,7 +937,7 @@ fn get_coverage(config: &Config) {
         .args(&[
             "llvm-cov",
             "report",
-            "--ignore-filename-regex=\'test_|replay_\'",
+            "--ignore-filename-regex=test_|replay_",
             "--branch",
             "--cobertura",
             "--output-path",
