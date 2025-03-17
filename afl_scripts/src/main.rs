@@ -39,7 +39,7 @@ const SHOWMAP_DIR: &str = "showmap";
 
 pub struct Config {
     pub crate_name: String,
-    pub crate_dir: PathBuf,      // . 
+    pub crate_dir: PathBuf,      //
     pub test_dir: PathBuf,       // <crate>/fuzz_target
     pub build_dir: PathBuf,      // <crate>/fuzz_target/build
     pub afl_input_dir: PathBuf,  // <crate>/fuzz_target/afl_init
@@ -703,10 +703,10 @@ fn get_coverage_env(work_dir: &Path, clean: bool) -> HashMap<String, String> {
 }
 
 fn build_afl_tests(config: &Config) {
-    let cov_envs = get_coverage_env(&config.build_dir, true);
+    let cov_envs = get_coverage_env(&config.crate_dir, true);
     println!("Build Log in: {:?}",config.test_dir.join("build.log"));
     let output_file = File::create(config.test_dir.join("build.log")).unwrap();
-    let work_dir = &config.build_dir;
+    let work_dir = &config.crate_dir;
     info!("Build afl tests in: {:?}", work_dir);
     let mut command=Command::new("cargo");
     command.arg("afl")
@@ -778,7 +778,7 @@ fn fuzz_it(config: &Config, tests: &[String]) {
 
         let val_copy = val.clone();
 
-        let work_dir = config.build_dir.clone();
+        let work_dir = config.crate_dir.clone();
         let envs_copy = cov_envs.clone();
 
         let handle = thread::spawn(move || {
@@ -1475,11 +1475,11 @@ fn init_afl_input(config: &Config) {
 
                     // Check if the folder is empty
                     if !this_cmin_path.exists() {
-                        fs::create_dir_all(&this_cmin_path);
+                        fs::create_dir_all(&this_cmin_path).unwrap();
                     }
 
                     if check_maybe_empty_directory(&this_cmin_path).is_empty(){
-                        fs::write(this_cmin_path.join("seed"), "42"); // Generate an empty file
+                        fs::write(this_cmin_path.join("seed"), "42").unwrap(); // Generate an empty file
                         println!("cmin dir is empty, create '42' for initial seed, good luck!");
                     }
                 
