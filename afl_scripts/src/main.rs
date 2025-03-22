@@ -1,13 +1,8 @@
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate lazy_static;
-extern crate config;
-extern crate regex;
-
 use log::LevelFilter;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::fs::{self, OpenOptions};
@@ -802,13 +797,15 @@ fn fuzz_it(config: &Config, tests: &[String]) {
     let mut threads = Vec::new();
     let val = Arc::new(AtomicUsize::new(0));
 
-    let loop_count = config.loop_count.unwrap_or(20);
-    info!("loop count = {}", loop_count);
+    let loop_count = config.loop_count;
+    info!("loop count = {:?}", loop_count);
 
     set_coverage_env(&config.build_dir, false);
     env::set_var("AFL_EXIT_WHEN_DONE", "1");
     env::set_var("AFL_NO_AFFINITY", "1");
-    env::set_var("AFL_FUZZER_LOOPCOUNT", loop_count.to_string());
+    if let Some(loop_count) = loop_count {
+        env::set_var("AFL_FUZZER_LOOPCOUNT", loop_count.to_string());
+    }
 
     let timeout = config.timeout.map_or("".to_string(), |v| v.to_string());
 

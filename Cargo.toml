@@ -1,5 +1,3 @@
 [workspace]
-members = [
-    "afl_scripts",
-    "find_literal",
-]
+resolver = "2"
+members = ["afl_scripts", "find_literal"]

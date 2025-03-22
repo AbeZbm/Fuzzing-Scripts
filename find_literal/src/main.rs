@@ -1,16 +1,13 @@
-use std::env;
-extern crate rand;
-extern crate regex;
-use rand::distributions::weighted::alias_method::WeightedIndex;
+use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 use regex::Regex;
 use std::collections::{BinaryHeap, HashMap};
+use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process;
-// use std::fs::{Component, , DirEntry};
 
 #[derive(Debug, Clone, Default)]
 pub struct UserOptions {
@@ -184,7 +181,7 @@ pub fn walk_dir_recursive(path: &Path, all_files: &mut Vec<PathBuf>) {
         .collect::<Result<Vec<_>, io::Error>>()
         .unwrap();
     for dir_path in &dir_entries {
-        if has_fuzz_target(dir_path){
+        if has_fuzz_target(dir_path) {
             continue;
         }
         if dir_path.is_file() && is_rs_src_file(dir_path) {
@@ -319,13 +316,13 @@ pub fn generate_afl_initial_input(
         );
         process::exit(-6);
     }
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
 
     let length_weight: Vec<usize> = vec![4, 2, 1, 1];
     let length_dist = WeightedIndex::new(length_weight).unwrap();
     for _ in 0..number {
         let mut one_string = String::new();
-        
+
         let pick_number = if let Some(length) = length {
             length
         } else {
