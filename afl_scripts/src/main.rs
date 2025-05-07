@@ -929,8 +929,9 @@ fn fuzz_it(config: &Config, tests: &[String]) {
 fn get_coverage(config: &Config) {
     set_coverage_env(&config.build_dir, false);
     let work_dir = &config.build_dir;
+    // Get coverage report as XML
     let covfile = config.crate_dir.join("llvm_cov.xml");
-    info!("Generating coverage file in {:?}", covfile);
+    info!("Generating coverage file as xml in {:?}", covfile);
     let output = Command::new("cargo")
         .args(&[
             "llvm-cov",
@@ -943,10 +944,33 @@ fn get_coverage(config: &Config) {
         ])
         .current_dir(work_dir)
         .output()
-        .expect("Failed to get coverage");
+        .expect("Failed to get coverage as xml");
     let exit_status = output.status;
     if exit_status.success() {
-        info!("Get code coverage succeed.");
+        info!("Get code coverage as xml succeed.");
+    } else {
+        error!("stdout = {:?}", String::from_utf8(output.stdout));
+        error!("stderr = {:?}", String::from_utf8(output.stderr));
+    }
+    // Get coverage report as JSON
+    let covfile = config.crate_dir.join("llvm_cov.json");
+    info!("Generating coverage file as json in {:?}", covfile);
+    let output = Command::new("cargo")
+        .args(&[
+            "llvm-cov",
+            "report",
+            "--ignore-filename-regex=test_|replay_",
+            "--branch",
+            "--json",
+            "--output-path",
+            covfile.to_str().unwrap(),
+        ])
+        .current_dir(work_dir)
+        .output()
+        .expect("Failed to get coverage as json");
+    let exit_status = output.status;
+    if exit_status.success() {
+        info!("Get code coverage as json succeed.");
     } else {
         error!("stdout = {:?}", String::from_utf8(output.stdout));
         error!("stderr = {:?}", String::from_utf8(output.stderr));
